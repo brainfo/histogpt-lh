@@ -1,0 +1,47 @@
+# HistoGPT-L Fine-tuning Requirements (Offline Training)
+# Essential dependencies only - no network access required during training
+
+# Core ML Frameworks
+torch>=2.2.0
+torchvision>=0.17.0
+pytorch-lightning>=2.0.0
+torchmetrics>=0.11.0
+
+# Transformers (pre-downloaded models assumed)
+transformers>=4.37.0
+tokenizers>=0.15.0
+safetensors>=0.5.0
+
+# Efficient Training
+peft>=0.4.0  # LoRA and parameter-efficient fine-tuning
+
+# Computer Vision and Attention
+flamingo-pytorch>=0.1.2  # Cross-attention blocks
+flash-perceiver>=0.2.0   # Efficient perceiver attention
+einops>=0.7.0            # Tensor operations
+einops-exts>=0.0.4
+
+# Data Processing (offline)
+h5py>=3.13.0
+numpy>=2.2.0
+scipy>=1.10.0
+scikit-learn>=1.3.0
+Pillow>=11.0.0
+
+# Logging (local only)
+tensorboard>=2.13.0
+tqdm>=4.67.0
+
+# Configuration and Utilities (offline)
+PyYAML>=6.0.0
+packaging>=25.0
+typing_extensions>=4.13.0
+
+# System Utilities
+psutil>=7.0.0
+
+# Note: For offline training ensure these are pre-installed:
+# 1. Pre-download models: ../microsoft_biogpt-large/
+# 2. Pre-download weights: ../histogpt-l-6k-pruned.pt
+# 3. Disable wandb: Don't use --use-wandb flag
+# 4. Local tensorboard: tensorboard --logdir logs/
