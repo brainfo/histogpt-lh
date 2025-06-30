@@ -11,13 +11,13 @@ This repository contains a PyTorch Lightning-based fine-tuning pipeline for Hist
 - **Output**: Single diagnosis per slide (e.g., "basal cell carcinoma")
 - **Approach**: Multiple Instance Learning (MIL) with patch aggregation
 
-### ⚡ **PyTorch Lightning Framework**
+### **PyTorch Lightning Framework**
 - Robust training infrastructure with automatic GPU handling
 - Built-in checkpointing, logging, and early stopping
 - Mixed precision training for memory efficiency
 - Comprehensive metrics tracking
 
-### 🧠 **Efficient Fine-tuning**
+### **Efficient Fine-tuning**
 - **LoRA** (Low-Rank Adaptation) support for parameter-efficient training
 - Selective layer freezing (vision encoder, language model, aggregator)
 - Gradient checkpointing for large model training
@@ -136,7 +136,7 @@ Each H5 file should contain:
 
 ### Diagnosis Extraction
 The system extracts diagnosis labels from filenames:
-- Files containing `sBBC` → "basal cell carcinoma"  
+- Files containing `sBBC` or `iBBC` → "basal cell carcinoma"
 - Files containing `PEK` → "squamous cell carcinoma"
 - Unknown patterns → "unknown_pathology"
 
@@ -222,3 +222,29 @@ Based on the original HistoGPT work:
   year={2024}
 }
 ```
+
+  Training:
+  - Still uses binary loss with symmetric penalties for efficiency
+  - Trains on "Final diagnosis: basal cell carcinoma" vs "Final diagnosis: squamous cell carcinoma"
+
+  Inference Options:
+
+  1. Binary Mode (mode="binary"):
+  predictions, diagnosis_text = model.predict(features, mode="binary")
+  # Returns: [0, 1], ["basal cell carcinoma", "squamous cell carcinoma"]
+  2. Full Report Mode (mode="full_report"):
+  predictions, full_reports = model.predict(features, mode="full_report", temperature=0.7)
+  # Returns: [0, 1], ["Basal cell carcinoma. The histological features show..."]
+
+  Key Features:
+  - Guided generation: Uses binary classification as starting point, then generates detailed reports
+  - Autoregressive: Full report generation with temperature control and sampling
+  - Flexible stopping: Stops on EOS tokens or sentence endings
+  - Clean interface: Single predict() method with mode switching
+
+  Usage Example:
+  # Fast binary classification
+  preds, diagnoses = model.predict(slide_features, mode="binary")
+
+  # Detailed reports  
+  preds, reports = model.predict(slide_features, mode="full_report", max_length=150, temperature=0.8)

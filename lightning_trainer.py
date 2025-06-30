@@ -78,6 +78,12 @@ class LightningHistoGPT(pl.LightningModule):
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
+        # Get binary classification token sequences for full phrases
+        self.basal_tokens = self.tokenizer.encode("basal cell carcinoma", add_special_tokens=False)
+        self.squamous_tokens = self.tokenizer.encode("squamous cell carcinoma", add_special_tokens=False)
+        print(f"Basal tokens: {self.basal_tokens} ({self.tokenizer.decode(self.basal_tokens)})")
+        print(f"Squamous tokens: {self.squamous_tokens} ({self.tokenizer.decode(self.squamous_tokens)})")
+        
         # Setup model
         self.setup_model()
         
@@ -237,9 +243,15 @@ class LightningHistoGPT(pl.LightningModule):
             slide_features = image_features[i]  # Shape: [num_patches, feature_dim]
             slide_input_ids = input_ids[i:i+1]  # Shape: [1, seq_len]
             
-            # Create dummy positions for patches
-            num_patches = slide_features.shape[0]
-            positions = torch.arange(num_patches, device=slide_features.device).unsqueeze(0)
+            # Use real coordinates when available, otherwise fallback to dummy positions
+            if batch.get('coordinates') and len(batch['coordinates']) > i and batch['coordinates'][i] is not None:
+                # Use real 3D coordinates from the slide
+                slide_coordinates = batch['coordinates'][i]  # Shape: [num_patches, 3]
+                positions = slide_coordinates.unsqueeze(0)  # Shape: [1, num_patches, 3]
+            else:
+                # Fallback to dummy sequential positions (should rarely happen)
+                num_patches = slide_features.shape[0]
+                positions = torch.arange(num_patches, device=slide_features.device).unsqueeze(0)
             
             # Forward pass for this slide
             outputs = self.model(slide_input_ids, slide_features.unsqueeze(0), positions)
@@ -274,11 +286,113 @@ class LightningHistoGPT(pl.LightningModule):
         
         return loss, logits
     
-    def training_step(self, batch, batch_idx):
-        """Training step"""
-        loss, logits = self.compute_loss(batch)
+    def compute_balanced_binary_loss(self, batch):
+        """Compute balanced binary loss for multi-token sequences"""
+        # Forward pass to get logits
+        logits = self.forward(batch)  # [batch_size, seq_len, vocab_size]
         
-        # Calculate perplexity
+        # Find the position of "Final diagnosis:" in the sequence
+        # We want to predict the tokens that come after this prompt
+        prompt_text = "Final diagnosis:"
+        prompt_tokens = self.tokenizer.encode(prompt_text, add_special_tokens=False)
+        
+        # Extract binary labels from batch (0=BCC, 1=SCC)
+        binary_labels = batch.get('binary_labels')
+        if binary_labels is None:
+            # Fallback: extract from diagnosis text
+            diagnoses = batch.get('diagnoses', [])
+            binary_labels = torch.zeros(len(diagnoses), dtype=torch.long, device=logits.device)
+            for i, diagnosis in enumerate(diagnoses):
+                if 'squamous' in diagnosis.lower():
+                    binary_labels[i] = 1
+                # basal remains 0
+        
+        # Compute sequence probabilities for both diagnoses
+        batch_size = logits.size(0)
+        seq_len = logits.size(1)
+        
+        # Get the maximum sequence length to predict
+        max_seq_len = max(len(self.basal_tokens), len(self.squamous_tokens))
+        
+        # Compute log probabilities for each diagnosis sequence
+        basal_log_probs = torch.zeros(batch_size, device=logits.device)
+        squamous_log_probs = torch.zeros(batch_size, device=logits.device)
+        
+        # For each position in the sequence
+        for pos in range(max_seq_len):
+            if seq_len > pos:
+                token_logits = logits[:, -(max_seq_len - pos), :]  # Get logits for this position
+                
+                # Add log prob for basal sequence
+                if pos < len(self.basal_tokens):
+                    basal_token_id = self.basal_tokens[pos]
+                    basal_log_probs += F.log_softmax(token_logits, dim=-1)[:, basal_token_id]
+                
+                # Add log prob for squamous sequence  
+                if pos < len(self.squamous_tokens):
+                    squamous_token_id = self.squamous_tokens[pos]
+                    squamous_log_probs += F.log_softmax(token_logits, dim=-1)[:, squamous_token_id]
+        
+        # Normalize by sequence length
+        basal_log_probs = basal_log_probs / len(self.basal_tokens)
+        squamous_log_probs = squamous_log_probs / len(self.squamous_tokens)
+        
+        # Create binary logits for cross-entropy
+        binary_logits = torch.stack([basal_log_probs, squamous_log_probs], dim=1)
+        
+        # Compute binary cross-entropy loss
+        binary_loss = F.cross_entropy(binary_logits, binary_labels)
+        
+        # Compute validity penalty based on greedy decoding
+        greedy_predictions = self._get_greedy_sequence_predictions(logits, max_seq_len)
+        valid_predictions = self._check_sequence_validity(greedy_predictions)
+        invalid_penalty = (~valid_predictions).float().mean() * 10.0
+        
+        total_loss = binary_loss + invalid_penalty
+        return total_loss, logits
+    
+    def _get_greedy_sequence_predictions(self, logits, max_seq_len):
+        """Get greedy sequence predictions for validity checking"""
+        batch_size = logits.size(0)
+        seq_len = logits.size(1)
+        
+        predictions = []
+        for i in range(batch_size):
+            pred_tokens = []
+            for pos in range(max_seq_len):
+                if seq_len > pos:
+                    token_logits = logits[i, -(max_seq_len - pos), :]
+                    pred_token = torch.argmax(token_logits).item()
+                    pred_tokens.append(pred_token)
+            predictions.append(pred_tokens)
+        
+        return predictions
+    
+    def _check_sequence_validity(self, predictions):
+        """Check if predicted sequences match either basal or squamous"""
+        valid = torch.zeros(len(predictions), dtype=torch.bool)
+        
+        for i, pred_tokens in enumerate(predictions):
+            # Check if prediction matches basal sequence
+            if len(pred_tokens) >= len(self.basal_tokens):
+                if pred_tokens[:len(self.basal_tokens)] == self.basal_tokens:
+                    valid[i] = True
+                    continue
+            
+            # Check if prediction matches squamous sequence
+            if len(pred_tokens) >= len(self.squamous_tokens):
+                if pred_tokens[:len(self.squamous_tokens)] == self.squamous_tokens:
+                    valid[i] = True
+                    continue
+        
+        return valid.to(predictions[0] if predictions else torch.device('cpu'))
+    
+    def training_step(self, batch, batch_idx):
+        """Training step with binary loss"""
+        # Use balanced binary loss instead of standard causal LM loss
+        loss, _ = self.compute_balanced_binary_loss(batch)
+        
+        # Calculate perplexity (approximate for binary case)
         perplexity = torch.exp(loss)
         
         # Update metrics
@@ -293,8 +407,9 @@ class LightningHistoGPT(pl.LightningModule):
         return loss
     
     def validation_step(self, batch, batch_idx):
-        """Validation step"""
-        loss, logits = self.compute_loss(batch)
+        """Validation step with binary loss"""
+        # Use balanced binary loss for validation too
+        loss, _ = self.compute_balanced_binary_loss(batch)
         
         # Calculate perplexity
         perplexity = torch.exp(loss)
@@ -312,8 +427,9 @@ class LightningHistoGPT(pl.LightningModule):
             self.sample_generation(batch)
     
     def test_step(self, batch, batch_idx):
-        """Test step"""
-        loss, logits = self.compute_loss(batch)
+        """Test step with binary loss"""
+        # Use balanced binary loss for testing too
+        loss, _ = self.compute_balanced_binary_loss(batch)
         
         # Calculate perplexity
         perplexity = torch.exp(loss)
@@ -326,6 +442,241 @@ class LightningHistoGPT(pl.LightningModule):
         self.log("test/loss", self.test_loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log("test/perplexity", self.test_perplexity, on_step=False, on_epoch=True, prog_bar=True)
     
+    def constrained_predict(self, image_features, coordinates=None):
+        """Generate constrained sequence predictions for full diagnostic phrases"""
+        with torch.no_grad():
+            batch_size = len(image_features)
+            device = image_features[0].device
+            
+            # Prepare input for "Final diagnosis:" prompt
+            prompt_text = "Final diagnosis:"
+            prompt_tokens = self.tokenizer.encode(prompt_text, add_special_tokens=False, return_tensors='pt')
+            prompt_tokens = prompt_tokens.to(device)
+            
+            # Initialize sequences with the prompt
+            current_sequences = prompt_tokens.repeat(batch_size, 1)  # [batch_size, prompt_len]
+            attention_masks = torch.ones_like(current_sequences)
+            
+            # Get maximum sequence length to generate
+            max_seq_len = max(len(self.basal_tokens), len(self.squamous_tokens))
+            
+            # Store sequence probabilities for each diagnosis
+            basal_log_probs = torch.zeros(batch_size, device=device)
+            squamous_log_probs = torch.zeros(batch_size, device=device)
+            
+            # Generate tokens step by step
+            for step in range(max_seq_len):
+                # Create batch for forward pass
+                mock_batch = {
+                    'input_ids': current_sequences,
+                    'attention_mask': attention_masks,
+                    'image_features': image_features,
+                    'coordinates': coordinates
+                }
+                
+                # Forward pass
+                logits = self.forward(mock_batch)
+                next_token_logits = logits[:, -1, :]  # [batch_size, vocab_size]
+                
+                # Compute probabilities for valid next tokens
+                log_probs = F.log_softmax(next_token_logits, dim=-1)
+                
+                # Add probabilities for basal sequence
+                if step < len(self.basal_tokens):
+                    basal_token_id = self.basal_tokens[step]
+                    basal_log_probs += log_probs[:, basal_token_id]
+                
+                # Add probabilities for squamous sequence
+                if step < len(self.squamous_tokens):
+                    squamous_token_id = self.squamous_tokens[step]
+                    squamous_log_probs += log_probs[:, squamous_token_id]
+                
+                # Determine next token based on current best sequence
+                # For simplicity, use greedy selection from valid options
+                next_tokens = torch.zeros(batch_size, dtype=torch.long, device=device)
+                
+                for i in range(batch_size):
+                    # Compare current probabilities and choose the better sequence
+                    current_basal_prob = basal_log_probs[i] / max(1, step + 1)
+                    current_squamous_prob = squamous_log_probs[i] / max(1, step + 1)
+                    
+                    if current_basal_prob >= current_squamous_prob:
+                        # Choose basal sequence
+                        if step < len(self.basal_tokens):
+                            next_tokens[i] = self.basal_tokens[step]
+                        else:
+                            next_tokens[i] = self.tokenizer.eos_token_id
+                    else:
+                        # Choose squamous sequence
+                        if step < len(self.squamous_tokens):
+                            next_tokens[i] = self.squamous_tokens[step]
+                        else:
+                            next_tokens[i] = self.tokenizer.eos_token_id
+                
+                # Append next tokens to sequences
+                current_sequences = torch.cat([current_sequences, next_tokens.unsqueeze(1)], dim=1)
+                attention_masks = torch.cat([attention_masks, torch.ones(batch_size, 1, device=device)], dim=1)
+            
+            # Determine final predictions based on total probabilities
+            normalized_basal_probs = basal_log_probs / len(self.basal_tokens)
+            normalized_squamous_probs = squamous_log_probs / len(self.squamous_tokens)
+            
+            # Binary predictions (0=basal, 1=squamous)
+            predictions = (normalized_squamous_probs > normalized_basal_probs).long()
+            
+            # Convert to text labels
+            predictions_text = []
+            for pred in predictions:
+                if pred == 0:
+                    predictions_text.append("basal cell carcinoma")
+                else:
+                    predictions_text.append("squamous cell carcinoma")
+            
+            # Also return the generated sequences for debugging
+            generated_sequences = []
+            for i in range(batch_size):
+                # Extract only the generated part (after prompt)
+                generated_tokens = current_sequences[i, prompt_tokens.size(1):].tolist()
+                generated_text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+                generated_sequences.append(generated_text.strip())
+            
+            return predictions, predictions_text, generated_sequences
+    
+    def generate_full_report(self, image_features, coordinates=None, max_length=200, temperature=0.7, do_sample=True):
+        """Generate full diagnostic reports during inference"""
+        with torch.no_grad():
+            batch_size = len(image_features)
+            device = image_features[0].device
+            
+            # First get binary classification to guide the report
+            binary_preds, binary_texts, _ = self.constrained_predict(image_features, coordinates)
+            
+            # Prepare input for full report generation
+            prompt_text = "Final diagnosis:"
+            prompt_tokens = self.tokenizer.encode(prompt_text, add_special_tokens=False, return_tensors='pt')
+            prompt_tokens = prompt_tokens.to(device)
+            
+            # Initialize sequences with the prompt
+            input_ids = prompt_tokens.repeat(batch_size, 1)
+            attention_mask = torch.ones_like(input_ids)
+            
+            full_reports = []
+            
+            for i in range(batch_size):
+                # Get single sample for generation
+                single_features = [image_features[i]]
+                single_coords = [coordinates[i]] if coordinates else None
+                single_input = input_ids[i:i+1]
+                single_mask = attention_mask[i:i+1]
+                
+                # Create batch for this single sample
+                single_batch = {
+                    'input_ids': single_input,
+                    'attention_mask': single_mask,
+                    'image_features': single_features,
+                    'coordinates': single_coords
+                }
+                
+                # Generate the report
+                generated_ids = self._generate_autoregressive(
+                    single_batch, 
+                    max_length=max_length,
+                    temperature=temperature,
+                    do_sample=do_sample,
+                    binary_guidance=binary_texts[i]
+                )
+                
+                # Decode the full report
+                generated_text = self.tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+                
+                # Clean up the text (remove prompt if it appears)
+                if prompt_text in generated_text:
+                    report_text = generated_text.split(prompt_text, 1)[1].strip()
+                else:
+                    report_text = generated_text.strip()
+                
+                full_reports.append(report_text)
+            
+            return binary_preds, binary_texts, full_reports
+    
+    def _generate_autoregressive(self, batch, max_length=200, temperature=0.7, do_sample=True, binary_guidance=None):
+        """Autoregressive generation for full reports"""
+        input_ids = batch['input_ids'].clone()
+        attention_mask = batch['attention_mask'].clone()
+        
+        # Add binary diagnosis as guidance at the start
+        if binary_guidance:
+            guidance_tokens = self.tokenizer.encode(f" {binary_guidance}.", add_special_tokens=False, return_tensors='pt')
+            guidance_tokens = guidance_tokens.to(input_ids.device)
+            input_ids = torch.cat([input_ids, guidance_tokens], dim=1)
+            guidance_mask = torch.ones_like(guidance_tokens)
+            attention_mask = torch.cat([attention_mask, guidance_mask], dim=1)
+        
+        # Generate additional tokens
+        for _ in range(max_length - input_ids.size(1)):
+            # Update batch with current sequence
+            current_batch = {
+                'input_ids': input_ids,
+                'attention_mask': attention_mask,
+                'image_features': batch['image_features'],
+                'coordinates': batch['coordinates']
+            }
+            
+            # Forward pass
+            logits = self.forward(current_batch)
+            next_token_logits = logits[:, -1, :] / temperature
+            
+            # Sample or take greedy
+            if do_sample:
+                probs = F.softmax(next_token_logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
+            else:
+                next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+            
+            # Append token
+            input_ids = torch.cat([input_ids, next_token], dim=1)
+            new_mask = torch.ones_like(next_token)
+            attention_mask = torch.cat([attention_mask, new_mask], dim=1)
+            
+            # Stop if EOS token
+            if next_token.item() == self.tokenizer.eos_token_id:
+                break
+            
+            # Stop if we see sentence endings for reports
+            if next_token.item() in [self.tokenizer.encode(".", add_special_tokens=False)[0], 
+                                    self.tokenizer.encode("!", add_special_tokens=False)[0]] and input_ids.size(1) > 50:
+                # Allow some minimum length before stopping on punctuation
+                break
+        
+        return input_ids
+    
+    def predict(self, image_features, coordinates=None, mode="binary", **generation_kwargs):
+        """
+        Unified prediction interface with multiple modes
+        
+        Args:
+            image_features: List of feature tensors for each slide
+            coordinates: Optional coordinates for each slide  
+            mode: "binary" for classification only, "full_report" for detailed reports
+            **generation_kwargs: Additional arguments for text generation
+            
+        Returns:
+            predictions: Binary predictions (0=BCC, 1=SCC)
+            text_outputs: Either diagnostic phrases or full reports
+        """
+        if mode == "binary":
+            predictions, predictions_text, _ = self.constrained_predict(image_features, coordinates)
+            return predictions, predictions_text
+            
+        elif mode == "full_report":
+            predictions, _, full_reports = self.generate_full_report(
+                image_features, coordinates, **generation_kwargs
+            )
+            return predictions, full_reports
+            
+        else:
+            raise ValueError(f"Unknown prediction mode: {mode}. Use 'binary' or 'full_report'")
+
     def sample_generation(self, batch):
         """Generate sample text for monitoring training progress"""
         try:
