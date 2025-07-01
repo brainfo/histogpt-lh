@@ -192,8 +192,7 @@ def main():
     
     # Create trainer
     logging.info("Creating Lightning trainer")
-    trainer = create_lightning_trainer(config)
-    trainer.logger = loggers
+    trainer = create_lightning_trainer(config, loggers)
     
     if args.test_only:
         # Test only mode

@@ -79,6 +79,7 @@ class SlideLevelDataset(Dataset):
                         self.max_patches_per_slide, 
                         replace=False
                     )
+                    indices = np.sort(indices)  # Sort indices for H5py compatibility
                     features = features[indices]
                     if coordinates is not None:
                         coordinates = coordinates[indices]

@@ -823,7 +823,7 @@ class HistoGPTDataModule(pl.LightningDataModule):
         return None
 
 
-def create_lightning_trainer(config: FineTuningConfig) -> pl.Trainer:
+def create_lightning_trainer(config: FineTuningConfig, loggers=None) -> pl.Trainer:
     """Create PyTorch Lightning trainer with proper configuration"""
     
     # Setup callbacks
@@ -865,6 +865,7 @@ def create_lightning_trainer(config: FineTuningConfig) -> pl.Trainer:
         log_every_n_steps=config.log_steps,
         val_check_interval=config.eval_steps,
         callbacks=callbacks,
+        logger=loggers,
         default_root_dir=config.output_dir,
         enable_checkpointing=True,
         enable_progress_bar=True,
