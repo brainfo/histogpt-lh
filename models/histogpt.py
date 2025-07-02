@@ -222,6 +222,7 @@ class HistoGPTForCausalLM(nn.Module):
         super().__init__()
         requires_grad(biogpt, False)
         requires_grad(aggregator, False)
+        self.config = biogpt.config  # Store config for LoRA compatibility
         self.histogpt = HistoGPTModel(aggregator, biogpt.biogpt, checkpoint)
         self.output_projection = biogpt.output_projection
 
