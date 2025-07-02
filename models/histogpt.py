@@ -248,3 +248,17 @@ class HistoGPTForCausalLM(nn.Module):
             attentions=outputs.attentions,
             cross_attentions=outputs.cross_attentions,
         )
+
+    def prepare_inputs_for_generation(self, input_ids, past_key_values=None, **kwargs):
+        """
+        Prepare inputs for generation. Required for LoRA compatibility.
+        """
+        model_inputs = {"input_ids": input_ids}
+        
+        # Add image features if provided
+        if "image_emb" in kwargs:
+            model_inputs["image_emb"] = kwargs["image_emb"]
+        if "image_pos" in kwargs:
+            model_inputs["image_pos"] = kwargs["image_pos"]
+            
+        return model_inputs
