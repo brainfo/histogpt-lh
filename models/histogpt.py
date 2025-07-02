@@ -229,8 +229,10 @@ class HistoGPTForCausalLM(nn.Module):
     def forward(
         self,
         input_ids: torch.LongTensor,
+        attention_mask: torch.Tensor = None,
         image_emb: torch.FloatTensor = None,
         image_pos: torch.LongTensor = None,
+        **kwargs
     ):
         # compute output with llm
         outputs = self.histogpt(input_ids, image_emb, image_pos)
