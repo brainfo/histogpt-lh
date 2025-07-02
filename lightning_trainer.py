@@ -385,7 +385,9 @@ class LightningHistoGPT(pl.LightningModule):
                     valid[i] = True
                     continue
         
-        return valid.to(predictions[0] if predictions else torch.device('cpu'))
+        # Move to the same device as the model parameters
+        device = next(self.parameters()).device
+        return valid.to(device)
     
     def training_step(self, batch, batch_idx):
         """Training step with binary loss"""
