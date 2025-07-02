@@ -252,8 +252,3 @@ preds, reports = model.predict(features, coords, mode="full_report", max_length=
 ## License
 
 The repository includes code from prior HistoGPT work © Manuel Tran / Helmholtz Munich. See individual file headers for details. All other code in this repository is under the project’s original license.
-
----
-
-This new README reflects the current codebase and documents offline training, LoRA support, the balanced binary loss, and the ability to generate full diagnostic reports.
-
