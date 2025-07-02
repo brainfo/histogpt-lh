@@ -1,250 +1,259 @@
-# HistoGPT-L Fine-tuning: Slide-Level Diagnosis Prediction
+# HistoGPT-L Fine-tuning
 
-## Overview
+This project provides a PyTorch Lightning pipeline to fine-tune the HistoGPT-L vision-language model on slide-level diagnosis data. The code supports offline training, LoRA tuning, and generating either short diagnoses or full pathology reports.
 
-This repository contains a PyTorch Lightning-based fine-tuning pipeline for HistoGPT-L, adapted for **slide-level diagnosis prediction** from histopathology images. The system uses Multiple Instance Learning (MIL) to process variable numbers of patches per slide and predict a single diagnosis.
+---
 
-## Key Features
-
-### 🎯 **Slide-Level Training**
-- **Input**: 251 whole slide images (H5 files with extracted features)
-- **Output**: Single diagnosis per slide (e.g., "basal cell carcinoma")
-- **Approach**: Multiple Instance Learning (MIL) with patch aggregation
-
-### **PyTorch Lightning Framework**
-- Robust training infrastructure with automatic GPU handling
-- Built-in checkpointing, logging, and early stopping
-- Mixed precision training for memory efficiency
-- Comprehensive metrics tracking
-
-### **Efficient Fine-tuning**
-- **LoRA** (Low-Rank Adaptation) support for parameter-efficient training
-- Selective layer freezing (vision encoder, language model, aggregator)
-- Gradient checkpointing for large model training
-- Multiple training configurations (quick, efficient, full)
-
-## Architecture
-
-```
-WSI Slide → Multiple Patches → Feature Aggregation → Diagnosis Text
-     ↓              ↓                    ↓               ↓
-[H5 Files]   [1000 patches]      [Perceiver]    ["Final diagnosis: ..."]
-                  ↓                    ↓
-            [1024-dim features]  [Cross-attention]
-```
-
-### Core Components
-1. **UNI Vision Encoder**: Pre-trained ViT-L/16 (frozen during training)
-2. **Perceiver Aggregator**: Combines variable number of patches into fixed representation
-3. **BioGPT Language Model**: Generates diagnosis text from aggregated features
-4. **Cross-attention Layers**: Enable vision-language interaction
-
-## Installation (Offline Training Ready)
-
-```bash
-# Install dependencies (no network required during training)
-pip install -r requirements.txt
-
-# Install flash attention (if needed)
-pip install flash-attn --no-build-isolation
-
-# Verify offline setup
-python check_offline_setup.py
-```
-
-### 🌐 Offline Training Prerequisites
-
-**Before training, ensure these are downloaded:**
-1. **BioGPT model**: `../microsoft_biogpt-large/` (config.json, pytorch_model.bin, tokenizer.json)
-2. **HistoGPT weights**: `../histogpt-l-6k-pruned.pt`
-3. **Data**: `../anne_data/512px_uni-vit-l-16_0.5mpp_0xdown_normal/*.h5`
-
-**No network access required during training!**
-
-These files can be found and expected in `../microsoft_biogpt-large/` directory as specified in `fine_tune_config.py:23`.
-
-- Option 1: Hugging Face Hub (easiest)
-
-  ```bash
-  git lfs install
-  git clone https://huggingface.co/microsoft/biogpt-large ../microsoft_biogpt-large
-  ```
-
-- Option 2: Python script
-
-
-```python
-  from transformers import BioGptForCausalLM, BioGptTokenizer
-
-  # This will download and cache the files
-  model =
-  BioGptForCausalLM.from_pretrained("microsoft/biogpt-large")
-  tokenizer =
-  BioGptTokenizer.from_pretrained("microsoft/biogpt-large")
-
-  # Save locally
-  model.save_pretrained("../microsoft_biogpt-large")
-  tokenizer.save_pretrained("../microsoft_biogpt-large")
-```
-
-## Quick Start
-
-### 1. Basic Training
-```bash
-# Quick training (LoRA only, ~42 minutes on A100)
-python train_lightning.py --config quick --batch-size 2
-
-# Efficient training (LoRA + unfrozen, ~3.5 hours on A100)  
-python train_lightning.py --config efficient --batch-size 4
-
-# Full fine-tuning (~7 hours on A100)
-python train_lightning.py --config full --batch-size 4
-```
-
-### 2. Custom Configuration
-```bash
-python train_lightning.py \
-  --train-data "../anne_data/512px_uni-vit-l-16_0.5mpp_0xdown_normal" \
-  --val-data "../anne_data/512px_uni-vit-l-16_0.5mpp_0xdown_normal" \
-  --batch-size 4 \
-  --max-steps 5000 \
-  --learning-rate 1e-4 \
-  --use-wandb \
-  --experiment-name "histogpt-diagnosis"
-```
-
-### 3. Resume Training
-```bash
-python train_lightning.py --config efficient --resume checkpoints/last.ckpt
-```
-
-## Data Format
-
-### Expected Data Structure
-```
-../anne_data/512px_uni-vit-l-16_0.5mpp_0xdown_normal/
-├── patient_sBBC_001.h5     # Basal cell carcinoma
-├── patient_PEK_002.h5      # Squamous cell carcinoma  
-├── sample_sBBC_003.h5
-└── ...
-```
-
-### H5 File Contents
-Each H5 file should contain:
-- `features`: Array of shape `[num_patches, 1024]` (UNI-ViT features)
-- `coordinates`: Array of shape `[num_patches, 3]` (x, y, z positions)
-
-### Diagnosis Extraction
-The system extracts diagnosis labels from filenames:
-- Files containing `sBBC` or `iBBC` → "basal cell carcinoma"
-- Files containing `PEK` → "squamous cell carcinoma"
-- Unknown patterns → "unknown_pathology"
-
-## Training Configurations
-
-| Configuration | Description | Training Time (A100) | Memory Usage |
-|---------------|-------------|---------------------|--------------|
-| **quick** | LoRA only, frozen LM | ~42 minutes | ~8GB |
-| **efficient** | LoRA + unfrozen LM | ~3.5 hours | ~12GB |
-| **full** | Complete fine-tuning | ~7 hours | ~15GB |
-
-## GPU Requirements
-
-### Recommended Setup
-- **Single A100 40GB**: Optimal for all configurations
-- **Memory needed**: ~12.5GB (with mixed precision + gradient checkpointing)
-- **Batch size**: 4-6 on A100, 2-4 on V100
-
-### Alternative Options
-- **V100 32GB**: Supported but slower (~60% speed of A100)
-- **Multiple GPUs**: Not necessary for 251 slides
-
-## Key Files
+## Repository structure
 
 ```
 histogpt-lh/
-├── train_lightning.py          # Main training script
-├── lightning_trainer.py        # PyTorch Lightning model wrapper
-├── slide_level_dataset.py      # Slide-level dataset (MIL approach)  
-├── fine_tune_config.py         # Training configurations
-├── models/
-│   ├── histogpt.py            # HistoGPT model architecture
-│   ├── aggregator.py          # Perceiver-based patch aggregation
-│   └── embedder.py            # Positional embeddings
+├── lightning_trainer.py       # Lightning model and trainer utilities
+├── slide_level_dataset.py     # Dataset loading with slide-level grouping
+├── fine_tune_config.py        # Hyperparameters and presets
+├── train_lightning.py         # Command line training script
 ├── helpers/
-│   └── inference.py           # Text generation utilities
-└── requirements.txt           # Dependencies
+│   └── inference.py           # Text generation helpers
+├── models/                    # Model components
+│   ├── aggregator.py          # FlashPerceiver-based patch aggregator
+│   ├── histogpt.py            # Cross-attention model wrapper
+│   ├── perceiver.py           # FlashPerceiver implementation
+│   └── embedder.py            # Positional embedding utilities
+└── check_offline_setup.py     # Verifies local files for offline runs
 ```
 
-## Training Output
+---
 
-The system generates:
-- **Checkpoints**: `checkpoints/histogpt-{epoch}-{val_loss}.ckpt`
-- **Logs**: TensorBoard logs in `logs/`
-- **Metrics**: Loss, perplexity, learning rate tracking
-- **Generated samples**: Example diagnoses during validation
+## Key features
 
-## Example Training Command
+### Slide-level dataset with offline mode
+The `SlideLevelDataset` groups patches by slide and forces transformers to load from local paths:
+
+```
+class SlideLevelDataset(Dataset):
+    ...
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["HF_DATASETS_OFFLINE"] = "1"
+    self.tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer_name,
+        local_files_only=offline_mode
+    )
+```
+
+### FlashPerceiver-based aggregator
+Patch features are embedded and aggregated using a FlashAttention Perceiver:
+
+```
+class Aggregator(nn.Module):
+    def __init__(self, d_input: int = 1024, d_model: int = 1536, num_cls: int = 167):
+        ...
+        self.model = FlashPerceiver(
+            d_input=d_input,
+            d_model=d_model,
+            n_heads=16,
+            n_layers=6,
+            n_latents=640,
+            attn_drop=0.0,
+            concat_latents=True,
+        )
+```
+
+### Cross-attention model
+`HistoGPTModel` inserts gated cross-attention blocks between the Perceiver and BioGPT layers:
+
+```
+for i in range(len(biogpt.layers)):
+    self.layers.append(
+        nn.ModuleList(
+            [
+                GatedCrossAttentionBlock(
+                    dim=self.biogpt_config.hidden_size,
+                    dim_head=(
+                        self.biogpt_config.hidden_size //
+                        self.biogpt_config.num_attention_heads
+                    ),
+                    heads=self.biogpt_config.num_attention_heads,
+                    ff_mult=4,
+                    only_attend_immediate_media=True
+                ),
+                biogpt.layers[i],
+            ]
+        )
+    )
+```
+
+### LoRA and fine-tuning controls
+The Lightning module can freeze parts of the model and optionally apply LoRA weights:
+
+```
+if hasattr(self.config, 'use_lora') and self.config.use_lora:
+    self.apply_lora()
+
+def apply_lora(self):
+    ...
+    lora_config = LoraConfig(
+        r=getattr(self.config, 'lora_rank', 8),
+        lora_alpha=getattr(self.config, 'lora_alpha', 16),
+        target_modules=getattr(self.config, 'lora_target_modules', ["q_proj", "v_proj"]),
+        lora_dropout=getattr(self.config, 'lora_dropout', 0.1),
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    self.model = get_peft_model(self.model, lora_config)
+    print(f"Applied LoRA with rank {lora_config.r}")
+```
+
+### Balanced binary loss
+The training loop uses a token-level loss with validity penalties to keep predictions consistent:
+
+```
+def compute_balanced_binary_loss(self, batch):
+    ...
+    basal_log_probs = torch.zeros(batch_size, device=logits.device)
+    squamous_log_probs = torch.zeros(batch_size, device=logits.device)
+    ...
+    binary_logits = torch.stack([basal_log_probs, squamous_log_probs], dim=1)
+    binary_loss = F.cross_entropy(binary_logits, binary_labels)
+    ...
+    invalid_penalty = (~valid_predictions).float().mean() * 10.0
+    total_loss = binary_loss + invalid_penalty
+    return total_loss, logits
+```
+
+### Unified prediction interface
+The model can output only the binary diagnosis or generate a full report:
+
+```
+def predict(self, image_features, coordinates=None, mode="binary", **generation_kwargs):
+    """
+    Unified prediction interface with multiple modes
+    ...
+    """
+    if mode == "binary":
+        predictions, predictions_text, _ = self.constrained_predict(image_features, coordinates)
+        return predictions, predictions_text
+    elif mode == "full_report":
+        predictions, _, full_reports = self.generate_full_report(
+            image_features, coordinates, **generation_kwargs
+        )
+        return predictions, full_reports
+    else:
+        raise ValueError(f"Unknown prediction mode: {mode}. Use 'binary' or 'full_report'")
+```
+
+### Config presets
+Several ready-to-use configurations are defined for quick, full or efficient runs:
+
+```
+QUICK_TUNE_CONFIG = FineTuningConfig(
+    learning_rate=5e-5,
+    max_steps=2000,
+    batch_size=2,
+    freeze_language_model=True,
+    use_lora=True,
+    lora_rank=8
+)
+
+FULL_TUNE_CONFIG = FineTuningConfig(
+    learning_rate=1e-4,
+    max_steps=10000,
+    batch_size=4,
+    freeze_language_model=False,
+    use_lora=False,
+    train_cross_attention=True,
+    train_aggregator=True
+)
+
+EFFICIENT_TUNE_CONFIG = FineTuningConfig(
+    learning_rate=2e-4,
+    max_steps=5000,
+    batch_size=8,
+    freeze_language_model=False,
+    use_lora=True,
+    lora_rank=16,
+    gradient_accumulation_steps=2
+)
+```
+
+### Offline readiness check
+Run `check_offline_setup.py` to ensure all data and models are available locally:
+
+```
+print("🔍 Checking Offline Training Setup")
+...
+if all_ready:
+    print("🎉 READY FOR OFFLINE TRAINING!")
+    print()
+    print("Start training with:")
+    print("python train_lightning.py --config quick --batch-size 2")
+else:
+    print("❌ NOT READY - Fix missing components above")
+```
+
+---
+
+## Installation
+
+1. Clone the repository and install dependencies:
 
 ```bash
-# Full training run with monitoring
+pip install -r requirements.txt
+```
+
+2. Download BioGPT and pretrained HistoGPT weights to the paths specified in `fine_tune_config.py`.
+
+3. (Optional) run the offline setup checker:
+
+```bash
+python check_offline_setup.py
+```
+
+---
+
+## Training
+
+Use the `train_lightning.py` script. Choose a preset or specify a custom configuration:
+
+```bash
+# Quick LoRA-only tuning
+python train_lightning.py --config quick --batch-size 2
+
+# Full fine-tuning
+python train_lightning.py --config full --batch-size 4
+
+# Custom path and parameters
 python train_lightning.py \
-  --config efficient \
+  --config custom \
+  --train-data /path/to/h5dir \
+  --val-data /path/to/h5dir \
   --batch-size 4 \
-  --max-steps 5000 \
-  --use-wandb \
-  --wandb-project "histogpt-diagnosis" \
-  --experiment-name "basal-squamous-classification" \
-  --output-dir "./checkpoints" \
-  --num-workers 0
+  --max-steps 5000
 ```
 
-## Troubleshooting
+Training uses the Lightning module defined in `lightning_trainer.py`, which handles dataset loading, optimizer setup, and evaluation.
 
-### Common Issues
-1. **CUDA out of memory**: Reduce `--batch-size` or `--max-patches`
-2. **H5 file errors**: Ensure files contain `features` and `coordinates` datasets
-3. **Slow loading**: Set `--num-workers 0` to avoid multiprocessing issues with H5 files
+---
 
-### Performance Tips
-- Use `--batch-size 4-6` on A100 40GB for optimal speed
-- Enable `--use-wandb` for comprehensive experiment tracking
-- Start with `--config quick` to verify everything works
+## Inference example
 
-## Citation
+After training, predictions can be obtained via the `predict` method:
 
-Based on the original HistoGPT work:
-```bibtex
-@article{histogpt2024,
-  title={HistoGPT: Vision-Language Model for Pathology Report Generation},
-  author={[Original Authors]},
-  journal={[Journal]},
-  year={2024}
-}
+```python
+from lightning_trainer import LightningHistoGPT
+model = LightningHistoGPT.load_from_checkpoint('path/to/checkpoint.ckpt')
+
+# features and coordinates should be lists of tensors per slide
+preds, texts = model.predict(features, coords, mode="binary")
+preds, reports = model.predict(features, coords, mode="full_report", max_length=200)
 ```
 
-  Training:
-  - Still uses binary loss with symmetric penalties for efficiency
-  - Trains on "Final diagnosis: basal cell carcinoma" vs "Final diagnosis: squamous cell carcinoma"
+---
 
-  Inference Options:
+## License
 
-  1. Binary Mode (mode="binary"):
-  predictions, diagnosis_text = model.predict(features, mode="binary")
-  # Returns: [0, 1], ["basal cell carcinoma", "squamous cell carcinoma"]
-  2. Full Report Mode (mode="full_report"):
-  predictions, full_reports = model.predict(features, mode="full_report", temperature=0.7)
-  # Returns: [0, 1], ["Basal cell carcinoma. The histological features show..."]
+The repository includes code from prior HistoGPT work © Manuel Tran / Helmholtz Munich. See individual file headers for details. All other code in this repository is under the project’s original license.
 
-  Key Features:
-  - Guided generation: Uses binary classification as starting point, then generates detailed reports
-  - Autoregressive: Full report generation with temperature control and sampling
-  - Flexible stopping: Stops on EOS tokens or sentence endings
-  - Clean interface: Single predict() method with mode switching
+---
 
-  Usage Example:
-  # Fast binary classification
-  preds, diagnoses = model.predict(slide_features, mode="binary")
+This new README reflects the current codebase and documents offline training, LoRA support, the balanced binary loss, and the ability to generate full diagnostic reports.
 
-  # Detailed reports  
-  preds, reports = model.predict(slide_features, mode="full_report", max_length=150, temperature=0.8)
