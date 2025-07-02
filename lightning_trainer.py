@@ -856,6 +856,15 @@ def create_lightning_trainer(config: FineTuningConfig, loggers=None) -> pl.Train
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='step')
     callbacks.append(lr_monitor)
     
+    # Calculate validation check interval (ensure it's not larger than training batches)
+    # Use epoch-based validation instead if eval_steps is too large
+    val_check_config = {}
+    if hasattr(config, 'eval_steps') and config.eval_steps:
+        # For small datasets, validate every epoch instead of every N steps
+        val_check_config['check_val_every_n_epoch'] = 1
+    else:
+        val_check_config['val_check_interval'] = min(config.eval_steps, 100)  # Cap at 100 steps
+    
     # Setup trainer
     trainer = pl.Trainer(
         max_steps=config.max_steps,
@@ -865,13 +874,13 @@ def create_lightning_trainer(config: FineTuningConfig, loggers=None) -> pl.Train
         gradient_clip_val=1.0,
         accumulate_grad_batches=config.gradient_accumulation_steps,
         log_every_n_steps=config.log_steps,
-        val_check_interval=config.eval_steps,
         callbacks=callbacks,
         logger=loggers,
         default_root_dir=config.output_dir,
         enable_checkpointing=True,
         enable_progress_bar=True,
         enable_model_summary=True,
+        **val_check_config
     )
     
     return trainer
