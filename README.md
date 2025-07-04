@@ -232,6 +232,24 @@ python train_lightning.py \
 
 Training uses the Lightning module defined in `lightning_trainer.py`, which handles dataset loading, optimizer setup, and evaluation.
 
+
+### Run 5-fold cross validation with:
+
+```bash
+  python train_cross_validation.py \
+      --data-path ../anne_data/512px_uni-vit-l-16_0.5mpp_0xdown_normal \
+      --config efficient \
+      --batch-size 4 \
+      --max-steps 2000 \
+      --output-dir ./cross_validation_results
+```
+
+  The script will:
+  - Split data into 5 stratified folds
+  - Train each fold with all classification metrics
+  - Save results to cross_validation_results.json
+  - Print average metrics: accuracy, precision, recall, F1, AUC ± std
+
 ---
 
 ## Inference example

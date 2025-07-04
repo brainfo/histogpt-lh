@@ -72,8 +72,17 @@ class FineTuningConfig:
     
     # Lightning-specific configurations
     early_stopping_patience: Optional[int] = 5  # Early stopping patience
-    task: str = "multiclass"                     # For metrics
+    task: str = "binary"                         # For metrics (binary classification)
     num_classes: int = 2                         # Number of diagnosis classes
+    
+    # Cross-validation configuration
+    n_folds: int = 5                             # Number of folds for cross validation
+    random_seed: int = 42                        # Random seed for reproducibility
+    
+    # Data loading
+    num_workers: int = 0                         # Number of workers for data loading
+    tokenizer_name: str = "../microsoft_biogpt-large"  # Tokenizer path
+    max_text_length: int = 512                   # Maximum text length
     
     # Logging and Checkpointing
     log_steps: int = 100
@@ -89,6 +98,25 @@ class FineTuningConfig:
                 "q_proj", "v_proj", "k_proj", "o_proj",
                 "gate_proj", "up_proj", "down_proj"
             ]
+    
+    @classmethod
+    def from_preset(cls, preset_name: str):
+        """Create configuration from preset name"""
+        if preset_name == "quick":
+            return QUICK_TUNE_CONFIG
+        elif preset_name == "efficient":
+            return EFFICIENT_TUNE_CONFIG
+        elif preset_name == "full":
+            return FULL_TUNE_CONFIG
+        else:
+            raise ValueError(f"Unknown preset: {preset_name}. Available: quick, efficient, full")
+    
+    def to_dict(self):
+        """Convert configuration to dictionary"""
+        return {
+            field.name: getattr(self, field.name)
+            for field in self.__dataclass_fields__.values()
+        }
 
 
 # Predefined configurations for different fine-tuning scenarios

@@ -97,6 +97,23 @@ class LightningHistoGPT(pl.LightningModule):
         self.val_perplexity = torchmetrics.MeanMetric()
         self.test_perplexity = torchmetrics.MeanMetric()
         
+        # Classification metrics
+        self.train_accuracy = torchmetrics.Accuracy(task='binary')
+        self.val_accuracy = torchmetrics.Accuracy(task='binary')
+        self.test_accuracy = torchmetrics.Accuracy(task='binary')
+        self.train_precision = torchmetrics.Precision(task='binary')
+        self.val_precision = torchmetrics.Precision(task='binary')
+        self.test_precision = torchmetrics.Precision(task='binary')
+        self.train_recall = torchmetrics.Recall(task='binary')
+        self.val_recall = torchmetrics.Recall(task='binary')
+        self.test_recall = torchmetrics.Recall(task='binary')
+        self.train_f1 = torchmetrics.F1Score(task='binary')
+        self.val_f1 = torchmetrics.F1Score(task='binary')
+        self.test_f1 = torchmetrics.F1Score(task='binary')
+        self.train_auc = torchmetrics.AUROC(task='binary')
+        self.val_auc = torchmetrics.AUROC(task='binary')
+        self.test_auc = torchmetrics.AUROC(task='binary')
+        
         # Track generation quality (optional)
         self.generation_samples = []
         
@@ -389,21 +406,104 @@ class LightningHistoGPT(pl.LightningModule):
         device = next(self.parameters()).device
         return valid.to(device)
     
+    def _get_binary_predictions(self, logits):
+        """Extract binary predictions and probabilities from logits"""
+        # Get sequence probabilities for both diagnoses like in compute_balanced_binary_loss
+        batch_size = logits.size(0)
+        max_seq_len = max(len(self.basal_tokens), len(self.squamous_tokens))
+        
+        # Compute log probabilities for each diagnosis sequence
+        basal_log_probs = torch.zeros(batch_size, device=logits.device)
+        squamous_log_probs = torch.zeros(batch_size, device=logits.device)
+        
+        # For each position in the sequence
+        for pos in range(max_seq_len):
+            if logits.size(1) > pos:
+                token_logits = logits[:, -(max_seq_len - pos), :]
+                
+                # Add log prob for basal sequence
+                if pos < len(self.basal_tokens):
+                    basal_token_id = self.basal_tokens[pos]
+                    basal_log_probs += F.log_softmax(token_logits, dim=-1)[:, basal_token_id]
+                
+                # Add log prob for squamous sequence  
+                if pos < len(self.squamous_tokens):
+                    squamous_token_id = self.squamous_tokens[pos]
+                    squamous_log_probs += F.log_softmax(token_logits, dim=-1)[:, squamous_token_id]
+        
+        # Normalize by sequence length
+        basal_log_probs = basal_log_probs / len(self.basal_tokens)
+        squamous_log_probs = squamous_log_probs / len(self.squamous_tokens)
+        
+        # Binary predictions (0=basal, 1=squamous)
+        binary_preds = (squamous_log_probs > basal_log_probs).long()
+        
+        # Convert log probabilities to probabilities for AUC
+        binary_logits = torch.stack([basal_log_probs, squamous_log_probs], dim=1)
+        binary_probs = F.softmax(binary_logits, dim=1)[:, 1]  # Prob of squamous (class 1)
+        
+        return binary_preds, binary_probs
+    
+    def _get_binary_targets(self, batch):
+        """Extract binary targets from batch"""
+        # Try to get binary labels from batch
+        binary_targets = batch.get('binary_labels')
+        if binary_targets is not None:
+            return binary_targets
+        
+        # Fallback: extract from diagnosis text
+        diagnoses = batch.get('diagnoses', [])
+        if diagnoses:
+            binary_targets = torch.zeros(len(diagnoses), dtype=torch.long, device=next(self.parameters()).device)
+            for i, diagnosis in enumerate(diagnoses):
+                if 'squamous' in diagnosis.lower():
+                    binary_targets[i] = 1
+                # basal remains 0
+            return binary_targets
+        
+        # Last resort: extract from text field
+        texts = batch.get('texts', [])
+        if texts:
+            binary_targets = torch.zeros(len(texts), dtype=torch.long, device=next(self.parameters()).device)
+            for i, text in enumerate(texts):
+                if 'squamous' in text.lower():
+                    binary_targets[i] = 1
+                # basal remains 0
+            return binary_targets
+        
+        # If we can't determine targets, return dummy targets (should not happen in practice)
+        batch_size = batch['input_ids'].size(0)
+        return torch.zeros(batch_size, dtype=torch.long, device=next(self.parameters()).device)
+    
     def training_step(self, batch, batch_idx):
         """Training step with binary loss"""
         # Use balanced binary loss instead of standard causal LM loss
-        loss, _ = self.compute_balanced_binary_loss(batch)
+        loss, logits = self.compute_balanced_binary_loss(batch)
         
         # Calculate perplexity (approximate for binary case)
         perplexity = torch.exp(loss)
         
+        # Get binary predictions and targets for classification metrics
+        binary_preds, binary_probs = self._get_binary_predictions(logits)
+        binary_targets = self._get_binary_targets(batch)
+        
         # Update metrics
         self.train_loss(loss)
         self.train_perplexity(perplexity)
+        self.train_accuracy(binary_preds, binary_targets)
+        self.train_precision(binary_preds, binary_targets)
+        self.train_recall(binary_preds, binary_targets)
+        self.train_f1(binary_preds, binary_targets)
+        self.train_auc(binary_probs, binary_targets)
         
         # Log metrics
         self.log("train/loss", self.train_loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log("train/perplexity", self.train_perplexity, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("train/accuracy", self.train_accuracy, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("train/precision", self.train_precision, on_step=True, on_epoch=True)
+        self.log("train/recall", self.train_recall, on_step=True, on_epoch=True)
+        self.log("train/f1", self.train_f1, on_step=True, on_epoch=True)
+        self.log("train/auc", self.train_auc, on_step=True, on_epoch=True)
         self.log("train/lr", self.optimizers().param_groups[0]['lr'], on_step=True, prog_bar=True)
         
         return loss
@@ -411,18 +511,32 @@ class LightningHistoGPT(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         """Validation step with binary loss"""
         # Use balanced binary loss for validation too
-        loss, _ = self.compute_balanced_binary_loss(batch)
+        loss, logits = self.compute_balanced_binary_loss(batch)
         
         # Calculate perplexity
         perplexity = torch.exp(loss)
         
+        # Get binary predictions and targets for classification metrics
+        binary_preds, binary_probs = self._get_binary_predictions(logits)
+        binary_targets = self._get_binary_targets(batch)
+        
         # Update metrics
         self.val_loss(loss)
         self.val_perplexity(perplexity)
+        self.val_accuracy(binary_preds, binary_targets)
+        self.val_precision(binary_preds, binary_targets)
+        self.val_recall(binary_preds, binary_targets)
+        self.val_f1(binary_preds, binary_targets)
+        self.val_auc(binary_probs, binary_targets)
         
         # Log metrics
         self.log("val/loss", self.val_loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log("val/perplexity", self.val_perplexity, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("val/accuracy", self.val_accuracy, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("val/precision", self.val_precision, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("val/recall", self.val_recall, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("val/f1", self.val_f1, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("val/auc", self.val_auc, on_step=False, on_epoch=True, prog_bar=True)
         
         # Sample generation for monitoring (occasionally)
         if batch_idx == 0 and len(self.generation_samples) < 5:
@@ -431,18 +545,32 @@ class LightningHistoGPT(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         """Test step with binary loss"""
         # Use balanced binary loss for testing too
-        loss, _ = self.compute_balanced_binary_loss(batch)
+        loss, logits = self.compute_balanced_binary_loss(batch)
         
         # Calculate perplexity
         perplexity = torch.exp(loss)
         
+        # Get binary predictions and targets for classification metrics
+        binary_preds, binary_probs = self._get_binary_predictions(logits)
+        binary_targets = self._get_binary_targets(batch)
+        
         # Update metrics
         self.test_loss(loss)
         self.test_perplexity(perplexity)
+        self.test_accuracy(binary_preds, binary_targets)
+        self.test_precision(binary_preds, binary_targets)
+        self.test_recall(binary_preds, binary_targets)
+        self.test_f1(binary_preds, binary_targets)
+        self.test_auc(binary_probs, binary_targets)
         
         # Log metrics
         self.log("test/loss", self.test_loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log("test/perplexity", self.test_perplexity, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("test/accuracy", self.test_accuracy, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("test/precision", self.test_precision, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("test/recall", self.test_recall, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("test/f1", self.test_f1, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("test/auc", self.test_auc, on_step=False, on_epoch=True, prog_bar=True)
     
     def constrained_predict(self, image_features, coordinates=None):
         """Generate constrained sequence predictions for full diagnostic phrases"""
