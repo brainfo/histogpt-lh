@@ -44,46 +44,28 @@ def get_slide_ids_and_labels(data_path):
 
 def create_fold_datasets(data_path, train_indices, val_indices, slide_ids, config):
     """Create training and validation datasets for a specific fold"""
-    
-    # Create temporary directories for this fold
+
     train_files = [f"{slide_ids[i]}.h5" for i in train_indices]
     val_files = [f"{slide_ids[i]}.h5" for i in val_indices]
-    
-    # Create fold-specific dataset wrapper
-    class FoldDataset(SlideLevelDataset):
-        def __init__(self, original_dataset, file_list):
-            super().__init__(
-                original_dataset.data_path,
-                tokenizer_name=original_dataset.tokenizer_name,
-                max_text_length=original_dataset.max_text_length,
-                max_patches_per_slide=original_dataset.max_patches_per_slide
-            )
-            # Filter to only include files in this fold
-            self.file_list = file_list
-            self.filtered_files = [f for f in self.h5_files if f.name in file_list]
-            print(f"Fold dataset created with {len(self.filtered_files)} files")
-        
-        def __len__(self):
-            return len(self.filtered_files)
-        
-        def __getitem__(self, idx):
-            # Use the filtered file list
-            h5_file = self.filtered_files[idx]
-            return self._load_sample(h5_file)
-    
-    # Create base dataset
-    base_dataset = SlideLevelDataset(
+
+    base_train = SlideLevelDataset(
         data_path,
         tokenizer_name=config.tokenizer_name,
         max_text_length=config.max_text_length,
-        max_patches_per_slide=config.max_patches_per_slide
+        max_patches_per_slide=config.max_patches_per_slide,
     )
-    
-    # Create fold-specific datasets
-    train_dataset = FoldDataset(base_dataset, train_files)
-    val_dataset = FoldDataset(base_dataset, val_files)
-    
-    return train_dataset, val_dataset
+
+    base_val = SlideLevelDataset(
+        data_path,
+        tokenizer_name=config.tokenizer_name,
+        max_text_length=config.max_text_length,
+        max_patches_per_slide=config.max_patches_per_slide,
+    )
+
+    base_train.slides = [s for s in base_train.slides if f"{s['slide_id']}.h5" in train_files]
+    base_val.slides = [s for s in base_val.slides if f"{s['slide_id']}.h5" in val_files]
+
+    return base_train, base_val
 
 
 def train_fold(fold_idx, train_dataset, val_dataset, config, output_dir):
