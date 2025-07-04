@@ -821,8 +821,8 @@ class LightningHistoGPT(pl.LightningModule):
                     self.tokenizer,
                     sample_features,
                     sample_input,
-                    max_length=50,
-                    temperature=0.7
+                    length=50,
+                    temp=0.7
                 )
                 
                 # Store sample

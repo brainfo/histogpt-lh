@@ -208,9 +208,9 @@ def evaluate_fold(model_path, test_dataset, config):
             binary_preds, binary_probs = model._get_binary_predictions(logits)
             binary_targets = model._get_binary_targets(batch)
             
-            all_predictions.extend(binary_preds.cpu().numpy())
-            all_probabilities.extend(binary_probs.cpu().numpy())
-            all_targets.extend(binary_targets.cpu().numpy())
+            all_predictions.extend(binary_preds.cpu().tolist())
+            all_probabilities.extend(binary_probs.cpu().tolist())
+            all_targets.extend(binary_targets.cpu().tolist())
     
     # Calculate metrics
     metrics = {
