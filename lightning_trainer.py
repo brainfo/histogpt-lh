@@ -746,7 +746,9 @@ class LightningHistoGPT(pl.LightningModule):
                 # Generate text
                 # Fix parameter order: generate(model, prompt, inputs, ...)
                 # where inputs = [features, coordinates]
-                sample_coords = batch.get('coordinates', [None])[0:1]  # Get coordinates for first slide
+                # Get coordinates for first slide - extract the tensor, not a list
+                coords_list = batch.get('coordinates', [None])
+                sample_coords = coords_list[0] if coords_list else None
                 generated = generate(
                     self.model,
                     sample_input,  # prompt tensor
