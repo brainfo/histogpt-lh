@@ -204,7 +204,7 @@ def evaluate_fold(model_path, test_dataset, config):
             batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
             
             # Get predictions
-            _, logits = model.compute_balanced_binary_loss(batch)
+            _, logits = model.compute_sequence_binary_loss(batch)
             binary_preds, binary_probs = model._get_binary_predictions(logits)
             binary_targets = model._get_binary_targets(batch)
             

@@ -127,6 +127,7 @@ class HistoGPTModel(nn.Module):
         input_ids: torch.LongTensor,
         image_emb: torch.FloatTensor = None,
         image_pos: torch.LongTensor = None,
+        attention_mask: torch.Tensor = None,
     ):
         output_attentions = self.biogpt_config.output_attentions
         use_cache = self.biogpt_config.use_cache
@@ -140,14 +141,18 @@ class HistoGPTModel(nn.Module):
         inputs_embeds = self.embed_tokens(input) * self.embed_scale
 
         # prepare attention masks
-        attention_mask = torch.ones(
-            (
-                inputs_embeds.shape[0],
-                inputs_embeds.shape[1] + past_key_values_length,
-            ),
-            dtype=torch.bool,
-            device=inputs_embeds.device,
-        )
+        if attention_mask is None:
+            attention_mask = torch.ones(
+                (
+                    inputs_embeds.shape[0],
+                    inputs_embeds.shape[1] + past_key_values_length,
+                ),
+                dtype=torch.bool,
+                device=inputs_embeds.device,
+            )
+        else:
+            # Use the provided attention mask
+            attention_mask = attention_mask.bool()
 
         # embed token positions
         positions = self.embed_positions(attention_mask, past_key_values_length)
@@ -235,7 +240,7 @@ class HistoGPTForCausalLM(nn.Module):
         **kwargs
     ):
         # compute output with llm
-        outputs = self.histogpt(input_ids, image_emb, image_pos)
+        outputs = self.histogpt(input_ids, image_emb, image_pos, attention_mask)
 
         # extract hidden states
         sequence_output = outputs[0]

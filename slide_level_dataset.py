@@ -6,11 +6,12 @@ Groups patches by slide for proper MIL training
 import h5py
 import torch
 import numpy as np
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Sampler
 from pathlib import Path
 from typing import Dict, List, Tuple
 import logging
 from transformers import AutoTokenizer
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ class SlideLevelDataset(Dataset):
                 
                 # Extract diagnosis from filename
                 diagnosis = self._extract_diagnosis_from_filename(h5_path.stem)
-                target_text = f"Final diagnosis: {diagnosis}"
+                target_text = diagnosis
                 
                 return {
                     'slide_id': h5_path.stem,
@@ -174,6 +175,16 @@ class SlideCollator:
         diagnoses = [item['diagnosis'] for item in batch]
         num_patches = [item['num_patches'] for item in batch]
         
+        # Create binary labels for loss computation
+        binary_labels = []
+        for diagnosis in diagnoses:
+            if 'basal' in diagnosis.lower():
+                binary_labels.append(0)
+            elif 'squamous' in diagnosis.lower():
+                binary_labels.append(1)
+            else:
+                binary_labels.append(0)  # Default to basal
+        
         return {
             'slide_ids': slide_ids,
             'image_features': image_features,  # List of tensors
@@ -182,7 +193,8 @@ class SlideCollator:
             'attention_mask': attention_mask,
             'texts': texts,
             'diagnoses': diagnoses,
-            'num_patches': num_patches
+            'num_patches': num_patches,
+            'binary_labels': torch.tensor(binary_labels, dtype=torch.long)
         }
 
 

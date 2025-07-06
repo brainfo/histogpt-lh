@@ -271,7 +271,8 @@ class LightningHistoGPT(pl.LightningModule):
                 positions = torch.arange(num_patches, device=slide_features.device).unsqueeze(0)
             
             # Forward pass for this slide
-            outputs = self.model(slide_input_ids, slide_features.unsqueeze(0), positions)
+            slide_attention_mask = attention_mask[i:i+1]  # Shape: [1, seq_len]
+            outputs = self.model(slide_input_ids, slide_attention_mask, slide_features.unsqueeze(0), positions)
             all_logits.append(outputs.logits)
         
         # Stack logits
@@ -303,15 +304,10 @@ class LightningHistoGPT(pl.LightningModule):
         
         return loss, logits
     
-    def compute_balanced_binary_loss(self, batch):
-        """Compute balanced binary loss for multi-token sequences"""
+    def compute_sequence_binary_loss(self, batch):
+        """Compute sequence-level binary classification loss"""
         # Forward pass to get logits
         logits = self.forward(batch)  # [batch_size, seq_len, vocab_size]
-        
-        # Find the position of "Final diagnosis:" in the sequence
-        # We want to predict the tokens that come after this prompt
-        prompt_text = "Final diagnosis:"
-        prompt_tokens = self.tokenizer.encode(prompt_text, add_special_tokens=False)
         
         # Extract binary labels from batch (0=BCC, 1=SCC)
         binary_labels = batch.get('binary_labels')
@@ -324,123 +320,55 @@ class LightningHistoGPT(pl.LightningModule):
                     binary_labels[i] = 1
                 # basal remains 0
         
-        # Compute sequence probabilities for both diagnoses
-        batch_size = logits.size(0)
-        seq_len = logits.size(1)
+        # Compute sequence probabilities for both complete diagnosis sequences
+        basal_seq_probs = self._compute_sequence_probability(logits, self.basal_tokens)
+        squamous_seq_probs = self._compute_sequence_probability(logits, self.squamous_tokens)
         
-        # Get the maximum sequence length to predict
-        max_seq_len = max(len(self.basal_tokens), len(self.squamous_tokens))
+        # Create binary classification logits from sequence probabilities
+        binary_logits = torch.stack([basal_seq_probs, squamous_seq_probs], dim=1)
         
-        # Compute log probabilities for each diagnosis sequence
-        basal_log_probs = torch.zeros(batch_size, device=logits.device)
-        squamous_log_probs = torch.zeros(batch_size, device=logits.device)
-        
-        # For each position in the sequence
-        for pos in range(max_seq_len):
-            if seq_len > pos:
-                token_logits = logits[:, -(max_seq_len - pos), :]  # Get logits for this position
-                
-                # Add log prob for basal sequence
-                if pos < len(self.basal_tokens):
-                    basal_token_id = self.basal_tokens[pos]
-                    basal_log_probs += F.log_softmax(token_logits, dim=-1)[:, basal_token_id]
-                
-                # Add log prob for squamous sequence  
-                if pos < len(self.squamous_tokens):
-                    squamous_token_id = self.squamous_tokens[pos]
-                    squamous_log_probs += F.log_softmax(token_logits, dim=-1)[:, squamous_token_id]
-        
-        # Normalize by sequence length
-        basal_log_probs = basal_log_probs / len(self.basal_tokens)
-        squamous_log_probs = squamous_log_probs / len(self.squamous_tokens)
-        
-        # Create binary logits for cross-entropy
-        binary_logits = torch.stack([basal_log_probs, squamous_log_probs], dim=1)
-        
-        # Compute binary cross-entropy loss
+        # Binary cross-entropy loss
         binary_loss = F.cross_entropy(binary_logits, binary_labels)
         
-        # Compute validity penalty based on greedy decoding
-        greedy_predictions = self._get_greedy_sequence_predictions(logits, max_seq_len)
-        valid_predictions = self._check_sequence_validity(greedy_predictions)
-        invalid_penalty = (~valid_predictions).float().mean() * 10.0
-        
-        total_loss = binary_loss + invalid_penalty
-        return total_loss, logits
+        return binary_loss, logits
     
-    def _get_greedy_sequence_predictions(self, logits, max_seq_len):
-        """Get greedy sequence predictions for validity checking"""
+    def _compute_sequence_probability(self, logits, target_tokens):
+        """Compute log probability of a target token sequence"""
         batch_size = logits.size(0)
         seq_len = logits.size(1)
         
-        predictions = []
-        for i in range(batch_size):
-            pred_tokens = []
-            for pos in range(max_seq_len):
-                if seq_len > pos:
-                    token_logits = logits[i, -(max_seq_len - pos), :]
-                    pred_token = torch.argmax(token_logits).item()
-                    pred_tokens.append(pred_token)
-            predictions.append(pred_tokens)
+        # Initialize sequence log probabilities
+        seq_log_probs = torch.zeros(batch_size, device=logits.device)
         
-        return predictions
-    
-    def _check_sequence_validity(self, predictions):
-        """Check if predicted sequences match either basal or squamous"""
-        valid = torch.zeros(len(predictions), dtype=torch.bool)
+        # For each token position in the target sequence
+        for pos, token_id in enumerate(target_tokens):
+            if pos < seq_len:
+                # Get logits for this position
+                token_logits = logits[:, pos, :]  # [batch_size, vocab_size]
+                
+                # Add log probability of the target token at this position
+                log_probs = F.log_softmax(token_logits, dim=-1)
+                seq_log_probs += log_probs[:, token_id]
         
-        for i, pred_tokens in enumerate(predictions):
-            # Check if prediction matches basal sequence
-            if len(pred_tokens) >= len(self.basal_tokens):
-                if pred_tokens[:len(self.basal_tokens)] == self.basal_tokens:
-                    valid[i] = True
-                    continue
-            
-            # Check if prediction matches squamous sequence
-            if len(pred_tokens) >= len(self.squamous_tokens):
-                if pred_tokens[:len(self.squamous_tokens)] == self.squamous_tokens:
-                    valid[i] = True
-                    continue
+        # Normalize by sequence length for fair comparison
+        normalized_seq_probs = seq_log_probs / len(target_tokens)
         
-        # Move to the same device as the model parameters
-        device = next(self.parameters()).device
-        return valid.to(device)
+        return normalized_seq_probs
     
     def _get_binary_predictions(self, logits):
-        """Extract binary predictions and probabilities from logits"""
-        # Get sequence probabilities for both diagnoses like in compute_balanced_binary_loss
-        batch_size = logits.size(0)
-        max_seq_len = max(len(self.basal_tokens), len(self.squamous_tokens))
+        """Extract binary predictions and probabilities from logits using sequence-level approach"""
+        # Compute sequence probabilities for both complete diagnosis sequences
+        basal_seq_probs = self._compute_sequence_probability(logits, self.basal_tokens)
+        squamous_seq_probs = self._compute_sequence_probability(logits, self.squamous_tokens)
         
-        # Compute log probabilities for each diagnosis sequence
-        basal_log_probs = torch.zeros(batch_size, device=logits.device)
-        squamous_log_probs = torch.zeros(batch_size, device=logits.device)
-        
-        # For each position in the sequence
-        for pos in range(max_seq_len):
-            if logits.size(1) > pos:
-                token_logits = logits[:, -(max_seq_len - pos), :]
-                
-                # Add log prob for basal sequence
-                if pos < len(self.basal_tokens):
-                    basal_token_id = self.basal_tokens[pos]
-                    basal_log_probs += F.log_softmax(token_logits, dim=-1)[:, basal_token_id]
-                
-                # Add log prob for squamous sequence  
-                if pos < len(self.squamous_tokens):
-                    squamous_token_id = self.squamous_tokens[pos]
-                    squamous_log_probs += F.log_softmax(token_logits, dim=-1)[:, squamous_token_id]
-        
-        # Normalize by sequence length
-        basal_log_probs = basal_log_probs / len(self.basal_tokens)
-        squamous_log_probs = squamous_log_probs / len(self.squamous_tokens)
+        # Create binary classification logits from sequence probabilities
+        binary_logits = torch.stack([basal_seq_probs, squamous_seq_probs], dim=1)
         
         # Binary predictions (0=basal, 1=squamous)
-        binary_preds = (squamous_log_probs > basal_log_probs).long()
+        binary_preds = torch.argmax(binary_logits, dim=1)
         
-        # Convert log probabilities to probabilities for AUC
-        binary_logits = torch.stack([basal_log_probs, squamous_log_probs], dim=1)
-        binary_probs = F.softmax(binary_logits, dim=1)[:, 1]  # Prob of squamous (class 1)
+        # Probabilities for AUC (probability of squamous)
+        binary_probs = F.softmax(binary_logits, dim=1)[:, 1]
         
         return binary_preds, binary_probs
     
@@ -476,9 +404,9 @@ class LightningHistoGPT(pl.LightningModule):
         return torch.zeros(batch_size, dtype=torch.long, device=next(self.parameters()).device)
     
     def training_step(self, batch, batch_idx):
-        """Training step with binary loss"""
-        # Use balanced binary loss instead of standard causal LM loss
-        loss, logits = self.compute_balanced_binary_loss(batch)
+        """Training step with sequence-level binary classification loss"""
+        # Use sequence-level binary loss
+        loss, logits = self.compute_sequence_binary_loss(batch)
         
         # Calculate perplexity (approximate for binary case)
         perplexity = torch.exp(loss)
@@ -509,9 +437,9 @@ class LightningHistoGPT(pl.LightningModule):
         return loss
     
     def validation_step(self, batch, batch_idx):
-        """Validation step with binary loss"""
-        # Use balanced binary loss for validation too
-        loss, logits = self.compute_balanced_binary_loss(batch)
+        """Validation step with sequence-level binary classification loss"""
+        # Use sequence-level binary loss for validation too
+        loss, logits = self.compute_sequence_binary_loss(batch)
         
         # Calculate perplexity
         perplexity = torch.exp(loss)
@@ -543,9 +471,9 @@ class LightningHistoGPT(pl.LightningModule):
             self.sample_generation(batch)
     
     def test_step(self, batch, batch_idx):
-        """Test step with binary loss"""
-        # Use balanced binary loss for testing too
-        loss, logits = self.compute_balanced_binary_loss(batch)
+        """Test step with sequence-level binary classification loss"""
+        # Use sequence-level binary loss for testing too
+        loss, logits = self.compute_sequence_binary_loss(batch)
         
         # Calculate perplexity
         perplexity = torch.exp(loss)
@@ -816,11 +744,13 @@ class LightningHistoGPT(pl.LightningModule):
                 sample_input = batch['input_ids'][0:1, :10]  # First 10 tokens as prompt
                 
                 # Generate text
+                # Fix parameter order: generate(model, prompt, inputs, ...)
+                # where inputs = [features, coordinates]
+                sample_coords = batch.get('coordinates', [None])[0:1]  # Get coordinates for first slide
                 generated = generate(
                     self.model,
-                    self.tokenizer,
-                    sample_features,
-                    sample_input,
+                    sample_input,  # prompt tensor
+                    [sample_features, sample_coords],  # inputs list [features, coords]
                     length=50,
                     temp=0.7
                 )
@@ -918,11 +848,18 @@ class HistoGPTDataModule(pl.LightningDataModule):
                 )
     
     def train_dataloader(self):
-        from slide_level_dataset import SlideCollator
+        from slide_level_dataset import SlideCollator, StratifiedBatchSampler
+        
+        # Use stratified batch sampler for balanced batches
+        batch_sampler = StratifiedBatchSampler(
+            dataset=self.train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True
+        )
+        
         return torch.utils.data.DataLoader(
             self.train_dataset,
-            batch_size=self.batch_size,
-            shuffle=True,
+            batch_sampler=batch_sampler,
             num_workers=self.num_workers,
             collate_fn=SlideCollator(),
             pin_memory=True
