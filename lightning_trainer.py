@@ -101,15 +101,15 @@ class LightningHistoGPT(pl.LightningModule):
         self.train_accuracy = torchmetrics.Accuracy(task='binary')
         self.val_accuracy = torchmetrics.Accuracy(task='binary')
         self.test_accuracy = torchmetrics.Accuracy(task='binary')
-        self.train_precision = torchmetrics.Precision(task='binary')
-        self.val_precision = torchmetrics.Precision(task='binary')
-        self.test_precision = torchmetrics.Precision(task='binary')
-        self.train_recall = torchmetrics.Recall(task='binary')
-        self.val_recall = torchmetrics.Recall(task='binary')
-        self.test_recall = torchmetrics.Recall(task='binary')
-        self.train_f1 = torchmetrics.F1Score(task='binary')
-        self.val_f1 = torchmetrics.F1Score(task='binary')
-        self.test_f1 = torchmetrics.F1Score(task='binary')
+        self.train_precision = torchmetrics.Precision(task='binary', zero_division=0)
+        self.val_precision = torchmetrics.Precision(task='binary', zero_division=0)
+        self.test_precision = torchmetrics.Precision(task='binary', zero_division=0)
+        self.train_recall = torchmetrics.Recall(task='binary', zero_division=0)
+        self.val_recall = torchmetrics.Recall(task='binary', zero_division=0)
+        self.test_recall = torchmetrics.Recall(task='binary', zero_division=0)
+        self.train_f1 = torchmetrics.F1Score(task='binary', zero_division=0)
+        self.val_f1 = torchmetrics.F1Score(task='binary', zero_division=0)
+        self.test_f1 = torchmetrics.F1Score(task='binary', zero_division=0)
         self.train_auc = torchmetrics.AUROC(task='binary')
         self.val_auc = torchmetrics.AUROC(task='binary')
         self.test_auc = torchmetrics.AUROC(task='binary')
@@ -740,7 +740,7 @@ class LightningHistoGPT(pl.LightningModule):
         try:
             with torch.no_grad():
                 # Take first sample from batch
-                sample_features = batch['image_features'][0:1]  # First slide
+                sample_features = batch['image_features'][0]  # First slide tensor
                 sample_input = batch['input_ids'][0:1, :10]  # First 10 tokens as prompt
                 
                 # Generate text
