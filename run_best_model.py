@@ -35,14 +35,11 @@ def main():
 
     # Predict diagnosis
     preds, short_texts = model.predict([feats], [coords], mode="binary")
-    _, reports = model.predict([feats], [coords], mode="full_report", max_length=200)
 
     with open(args.output, "w") as f:
         f.write(f"Prediction: {short_texts[0]}\n")
-        f.write(f"Report: {reports[0]}\n")
 
     print("Prediction:", short_texts[0])
-    print("Report:", reports[0])
 
 
 if __name__ == "__main__":
