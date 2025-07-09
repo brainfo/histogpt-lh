@@ -171,6 +171,8 @@ class HistoGPTModel(nn.Module):
         # prepare image features
         if image_emb is not None:
             image_latents = self.aggregator(image_emb, image_pos)
+            # Ensure image_latents has the right shape for projection
+            # Should be [batch_size, seq_len, 1536] -> [batch_size, seq_len, hidden_size]
             image_latents = self.projection(image_latents)
 
         # loop over transformer layers

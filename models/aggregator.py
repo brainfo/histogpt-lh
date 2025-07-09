@@ -45,5 +45,14 @@ class Aggregator(nn.Module):
         x = torch.cat(x, dim=1)
         x = self.model(x)
         x = self.norm(x)
-        x = x.unsqueeze(1) if x.ndim == 3 else x
+        # Ensure output has shape [batch_size, seq_len, d_model] for cross-attention
+        if x.ndim == 3:
+            # x is [batch_size, seq_len, d_model] - this is correct
+            pass
+        elif x.ndim == 2:
+            # x is [batch_size, d_model] - add sequence dimension
+            x = x.unsqueeze(1)
+        else:
+            # Handle unexpected dimensions
+            x = x.view(x.size(0), -1, x.size(-1))
         return x

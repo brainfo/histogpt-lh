@@ -613,7 +613,9 @@ class LightningHistoGPT(pl.LightningModule):
             with torch.no_grad():
                 # Take first sample from batch
                 sample_features = batch['image_features'][0]  # First slide tensor
-                sample_input = batch['input_ids'][0:1, :10]  # First 10 tokens as prompt
+                # Ensure we don't exceed sequence length
+                seq_len = min(10, batch['input_ids'].shape[1])
+                sample_input = batch['input_ids'][0:1, :seq_len]  # First tokens as prompt
                 
                 # Generate text
                 # Fix parameter order: generate(model, prompt, inputs, ...)

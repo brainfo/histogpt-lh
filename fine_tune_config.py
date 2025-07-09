@@ -44,12 +44,12 @@ class FineTuningConfig:
     
     # Fine-tuning Strategy
     freeze_vision_encoder: bool = True      # Keep UNI frozen
-    freeze_language_model: bool = False     # Allow BioGPT fine-tuning
+    freeze_language_model: bool = True     # Allow BioGPT fine-tuning
     freeze_aggregator: bool = False         # Allow aggregator training
-    train_cross_attention: bool = True      # Train cross-attention layers
+    train_cross_attention: bool = False      # Train cross-attention layers
     train_aggregator: bool = True           # Train aggregator module
-    train_projection: bool = True           # Train vision-language projection
-    train_positional_embedding: bool = True # Train positional embeddings
+    train_projection: bool = False           # Train vision-language projection
+    train_positional_embedding: bool = False # Train positional embeddings
     
     # LoRA Configuration (for efficient fine-tuning)
     use_lora: bool = True
@@ -133,10 +133,7 @@ FULL_TUNE_CONFIG = FineTuningConfig(
     learning_rate=1e-4,
     max_steps=10000,
     batch_size=4,
-    freeze_language_model=False,
-    use_lora=False,
-    train_cross_attention=True,
-    train_aggregator=True
+    use_lora=False
 )
 
 EFFICIENT_TUNE_CONFIG = FineTuningConfig(
