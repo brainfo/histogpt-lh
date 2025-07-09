@@ -108,7 +108,7 @@ class SlideLevelDataset(Dataset):
         
         disease_patterns = {
             'sbbc': 'basal cell carcinoma',
-            'ibbc': 'basal cell carcinoma',
+            'ibcc': 'basal cell carcinoma',
             'pek': 'squamous cell carcinoma'
         }
         
