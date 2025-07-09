@@ -67,6 +67,7 @@ class SlideLevelDataset(Dataset):
         try:
             with h5py.File(h5_path, 'r') as f:
                 if 'features' not in f:
+                    logger.warning(f"No 'features' key in {h5_path}")
                     return None
                 
                 features = f['features'][:]
@@ -100,6 +101,9 @@ class SlideLevelDataset(Dataset):
                 
         except Exception as e:
             logger.warning(f"Failed to load {h5_path}: {e}")
+            # Check if it's a corrupted file by examining the error
+            if "invalid load key" in str(e) or "not an HDF5 file" in str(e):
+                logger.error(f"Corrupted H5 file detected: {h5_path}")
             return None
     
     def _extract_diagnosis_from_filename(self, filename: str) -> str:
