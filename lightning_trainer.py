@@ -404,9 +404,8 @@ class LightningHistoGPT(pl.LightningModule):
         return torch.zeros(batch_size, dtype=torch.long, device=next(self.parameters()).device)
     
     def training_step(self, batch, batch_idx):
-        """Training step with sequence-level binary classification loss"""
-        # Use sequence-level binary loss
-        loss, logits = self.compute_sequence_binary_loss(batch)
+        """Training step using token-level language modeling loss."""
+        loss, logits = self.compute_loss(batch)
         
         # Calculate perplexity (approximate for binary case)
         perplexity = torch.exp(loss)
@@ -437,9 +436,8 @@ class LightningHistoGPT(pl.LightningModule):
         return loss
     
     def validation_step(self, batch, batch_idx):
-        """Validation step with sequence-level binary classification loss"""
-        # Use sequence-level binary loss for validation too
-        loss, logits = self.compute_sequence_binary_loss(batch)
+        """Validation step using token-level language modeling loss."""
+        loss, logits = self.compute_loss(batch)
         
         # Calculate perplexity
         perplexity = torch.exp(loss)
@@ -471,9 +469,8 @@ class LightningHistoGPT(pl.LightningModule):
             self.sample_generation(batch)
     
     def test_step(self, batch, batch_idx):
-        """Test step with sequence-level binary classification loss"""
-        # Use sequence-level binary loss for testing too
-        loss, logits = self.compute_sequence_binary_loss(batch)
+        """Test step using token-level language modeling loss."""
+        loss, logits = self.compute_loss(batch)
         
         # Calculate perplexity
         perplexity = torch.exp(loss)
@@ -600,140 +597,15 @@ class LightningHistoGPT(pl.LightningModule):
             
             return predictions, predictions_text, generated_sequences
     
-    def generate_full_report(self, image_features, coordinates=None, max_length=200, temperature=0.7, do_sample=True):
-        """Generate full diagnostic reports during inference"""
-        with torch.no_grad():
-            batch_size = len(image_features)
-            device = image_features[0].device
-            
-            # First get binary classification to guide the report
-            binary_preds, binary_texts, _ = self.constrained_predict(image_features, coordinates)
-            
-            # Prepare input for full report generation
-            prompt_text = "Final diagnosis:"
-            prompt_tokens = self.tokenizer.encode(prompt_text, add_special_tokens=False, return_tensors='pt')
-            prompt_tokens = prompt_tokens.to(device)
-            
-            # Initialize sequences with the prompt
-            input_ids = prompt_tokens.repeat(batch_size, 1)
-            attention_mask = torch.ones_like(input_ids)
-            
-            full_reports = []
-            
-            for i in range(batch_size):
-                # Get single sample for generation
-                single_features = [image_features[i]]
-                single_coords = [coordinates[i]] if coordinates else None
-                single_input = input_ids[i:i+1]
-                single_mask = attention_mask[i:i+1]
-                
-                # Create batch for this single sample
-                single_batch = {
-                    'input_ids': single_input,
-                    'attention_mask': single_mask,
-                    'image_features': single_features,
-                    'coordinates': single_coords
-                }
-                
-                # Generate the report
-                generated_ids = self._generate_autoregressive(
-                    single_batch, 
-                    max_length=max_length,
-                    temperature=temperature,
-                    do_sample=do_sample,
-                    binary_guidance=binary_texts[i]
-                )
-                
-                # Decode the full report
-                generated_text = self.tokenizer.decode(generated_ids[0], skip_special_tokens=True)
-                
-                # Clean up the text (remove prompt if it appears)
-                if prompt_text in generated_text:
-                    report_text = generated_text.split(prompt_text, 1)[1].strip()
-                else:
-                    report_text = generated_text.strip()
-                
-                full_reports.append(report_text)
-            
-            return binary_preds, binary_texts, full_reports
-    
-    def _generate_autoregressive(self, batch, max_length=200, temperature=0.7, do_sample=True, binary_guidance=None):
-        """Autoregressive generation for full reports"""
-        input_ids = batch['input_ids'].clone()
-        attention_mask = batch['attention_mask'].clone()
-        
-        # Add binary diagnosis as guidance at the start
-        if binary_guidance:
-            guidance_tokens = self.tokenizer.encode(f" {binary_guidance}.", add_special_tokens=False, return_tensors='pt')
-            guidance_tokens = guidance_tokens.to(input_ids.device)
-            input_ids = torch.cat([input_ids, guidance_tokens], dim=1)
-            guidance_mask = torch.ones_like(guidance_tokens)
-            attention_mask = torch.cat([attention_mask, guidance_mask], dim=1)
-        
-        # Generate additional tokens
-        for _ in range(max_length - input_ids.size(1)):
-            # Update batch with current sequence
-            current_batch = {
-                'input_ids': input_ids,
-                'attention_mask': attention_mask,
-                'image_features': batch['image_features'],
-                'coordinates': batch['coordinates']
-            }
-            
-            # Forward pass
-            logits = self.forward(current_batch)
-            next_token_logits = logits[:, -1, :] / temperature
-            
-            # Sample or take greedy
-            if do_sample:
-                probs = F.softmax(next_token_logits, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
-            else:
-                next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
-            
-            # Append token
-            input_ids = torch.cat([input_ids, next_token], dim=1)
-            new_mask = torch.ones_like(next_token)
-            attention_mask = torch.cat([attention_mask, new_mask], dim=1)
-            
-            # Stop if EOS token
-            if next_token.item() == self.tokenizer.eos_token_id:
-                break
-            
-            # Stop if we see sentence endings for reports
-            if next_token.item() in [self.tokenizer.encode(".", add_special_tokens=False)[0], 
-                                    self.tokenizer.encode("!", add_special_tokens=False)[0]] and input_ids.size(1) > 50:
-                # Allow some minimum length before stopping on punctuation
-                break
-        
-        return input_ids
+
     
     def predict(self, image_features, coordinates=None, mode="binary", **generation_kwargs):
-        """
-        Unified prediction interface with multiple modes
-        
-        Args:
-            image_features: List of feature tensors for each slide
-            coordinates: Optional coordinates for each slide  
-            mode: "binary" for classification only, "full_report" for detailed reports
-            **generation_kwargs: Additional arguments for text generation
-            
-        Returns:
-            predictions: Binary predictions (0=BCC, 1=SCC)
-            text_outputs: Either diagnostic phrases or full reports
-        """
-        if mode == "binary":
-            predictions, predictions_text, _ = self.constrained_predict(image_features, coordinates)
-            return predictions, predictions_text
-            
-        elif mode == "full_report":
-            predictions, _, full_reports = self.generate_full_report(
-                image_features, coordinates, **generation_kwargs
-            )
-            return predictions, full_reports
-            
-        else:
-            raise ValueError(f"Unknown prediction mode: {mode}. Use 'binary' or 'full_report'")
+        """Predict diagnosis for the given slides."""
+        if mode != "binary":
+            raise ValueError(f"Unknown prediction mode: {mode}. Only 'binary' is supported")
+
+        predictions, predictions_text, _ = self.constrained_predict(image_features, coordinates)
+        return predictions, predictions_text
 
     def sample_generation(self, batch):
         """Generate sample text for monitoring training progress"""

@@ -47,7 +47,6 @@ model = LightningHistoGPT.load_from_checkpoint("path/to/checkpoint.ckpt")
 
 # features and coords are lists of tensors per slide
 preds, short_texts = model.predict(features, coords, mode="binary")
-preds, reports = model.predict(features, coords, mode="full_report", max_length=200)
 ```
 
 ## Repository layout
